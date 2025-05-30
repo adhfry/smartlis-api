@@ -2,7 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\Mode;
+
 use App\Models\User;
 // use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -23,7 +23,7 @@ class DatabaseSeeder extends Seeder
         //     'email' => 'test@example.com',
         // ]);
         $this->call([
-            Mode::class,
+            ModeSeeder::class,
             RoleSeeder::class,
             UserSeeder::class,
         ]);
