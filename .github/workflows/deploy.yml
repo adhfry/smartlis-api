@@ -1,4 +1,4 @@
-name: Deploy Laravel API to Server
+name: Deploy Laravel API to api.smartlis.site
 
 on:
   push:
@@ -17,66 +17,47 @@ jobs:
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.5.3
         with:
-          # Pastikan secret ini sudah berisi private key VPS-mu
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Extract Commit Message
-        id: commit_message
+        id: get_message
         run: |
           MESSAGE=$(git log -1 --pretty=%B)
           echo "MESSAGE=$MESSAGE" >> $GITHUB_ENV
-          echo "Commit Message: $MESSAGE"
 
-      - name: Determine Migration Command
-        id: migration
+      - name: Parse Version dari Commit
         run: |
-          # Default migrate normal
-          MIG="php artisan migrate --force"
-          # Kalau branch dev dan ada flag |fresh
-          if [[ "${GITHUB_REF##*/}" == "dev" ]] && echo "$MESSAGE" | grep -q "|fresh"; then
-            MIG="php artisan migrate:fresh --force"
-          fi
-          # Kalau ada flag |seed
-          if echo "$MESSAGE" | grep -q "|seed"; then
-            MIG="$MIG && php artisan db:seed --force"
-          fi
-          echo "MIGRATION_COMMAND=$MIG" >> $GITHUB_ENV
-          echo "Using migration command: $MIG"
+          VERSION=$(echo "$MESSAGE" | grep -oP "\|update-version:\K[0-9]+\.[0-9]+\.[0-9]+" || echo "")
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
 
-      - name: Deploy to VPS via SSH
-        env:
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          SERVER_PATH_MAIN: "/var/www/api.smartlis.site"
-          SERVER_PATH_DEV: "/var/www/dev.api.smartlis.site"
-          MIG_CMD: ${{ env.MIGRATION_COMMAND }}
+      - name: Detect fresh/seed (branch dev)
+        if: github.ref == 'refs/heads/dev'
         run: |
-          # Pilih path berdasarkan branch
+          echo "ISFRESH=$(echo $MESSAGE | grep -q '|fresh' && echo true || echo false)" >> $GITHUB_ENV
+          echo "ISSEED=$(echo $MESSAGE | grep -q '|seed' && echo true || echo false)" >> $GITHUB_ENV
+
+      - name: Deploy ke VPS
+        run: |
+          # Tentukan path & domain
           if [[ "${GITHUB_REF##*/}" == "main" ]]; then
-            PATH_TO_DEPLOY=$SERVER_PATH_MAIN
+            PATH_SERVER="/var/www/api.smartlis.site"
+            MIGRATE="php artisan migrate --force"
           else
-            PATH_TO_DEPLOY=$SERVER_PATH_DEV
+            PATH_SERVER="/var/www/dev.api.smartlis.site"
+            MIGRATE="php artisan migrate --force"
+            $([[ "$ISFRESH" == "true" ]] && MIGRATE="php artisan migrate:fresh --force")
+            $([[ "$ISSEED"  == "true" ]] && MIGRATE="$MIGRATE && php artisan db:seed --force")
           fi
 
-          echo "Deploying branch ${GITHUB_REF##*/} to $PATH_TO_DEPLOY"
-
-          ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_HOST << 'EOF'
-            cd $PATH_TO_DEPLOY
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.VPS_IP }} << EOF
+            cd $PATH_SERVER
             git pull origin ${GITHUB_REF##*/}
             composer install --no-dev --optimize-autoloader
-
-            echo "Running migrations…"
-            $MIG_CMD
-
-            if [[ -n "${{ env.APP_VERSION }}" ]]; then
-              echo "Updating APP_VERSION to ${{ env.APP_VERSION }}"
-              sed -i "s/^APP_VERSION=.*/APP_VERSION=${{ env.APP_VERSION }}/" .env
+            $MIGRATE
+            if [[ -n "$APP_VERSION" ]]; then
+              sed -i "s/^APP_VERSION=.*/APP_VERSION=$APP_VERSION/" .env
             fi
-
-            php artisan config:clear
-            php artisan cache:clear
-            php artisan route:clear
-            php artisan view:clear
-
-            systemctl reload nginx
+            php artisan config:clear && php artisan cache:clear \
+              && php artisan route:clear && php artisan view:clear
+            systemctl restart nginx
           EOF
